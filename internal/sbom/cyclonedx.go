@@ -242,6 +242,9 @@ func convertComponent(raw cycloneDXComponent) (Component, *SkippedComponent) {
 		return skipped(fmt.Sprintf("component version %q conflicts with package URL version %q", componentVersion, purl.Version))
 	}
 
+	if isAlpine(purl) && alpineRelease(purl) == "" {
+		return skipped("Alpine package URL needs a distro qualifier such as distro=alpine-3.17.2 to select an OSV release")
+	}
 	ecosystem, name, ok := osvIdentity(purl)
 	if !ok {
 		return skipped(fmt.Sprintf("package URL type %q is not mapped to an OSV ecosystem", purl.Type))
@@ -299,8 +302,14 @@ func osvIdentity(purl packageurl.PackageURL) (string, string, bool) {
 	case packageurl.TypeSwift:
 		return "SwiftURL", joined("/"), true
 	case packageurl.TypeApk:
-		if firstNamespaceSegment(purl.Namespace) == "alpine" {
-			return "Alpine", purl.Name, true
+		if release := alpineRelease(purl); isAlpine(purl) && release != "" {
+			// Alpine advisories name the source package, not binary
+			// subpackages such as libcrypto3.
+			name := strings.TrimSpace(purl.Qualifiers.Map()["upstream"])
+			if name == "" {
+				name = purl.Name
+			}
+			return "Alpine:" + release, name, true
 		}
 	case packageurl.TypeDebian:
 		switch firstNamespaceSegment(purl.Namespace) {
@@ -318,6 +327,27 @@ func osvIdentity(purl packageurl.PackageURL) (string, string, bool) {
 		}
 	}
 	return "", "", false
+}
+
+func isAlpine(purl packageurl.PackageURL) bool {
+	return purl.Type == packageurl.TypeApk && firstNamespaceSegment(purl.Namespace) == "alpine"
+}
+
+// alpineRelease returns the OSV branch, such as v3.17, named by the distro
+// qualifier. OSV only evaluates Alpine version ranges within one branch, so a
+// query without it silently matches nothing.
+func alpineRelease(purl packageurl.PackageURL) string {
+	distro := strings.ToLower(strings.TrimSpace(purl.Qualifiers.Map()["distro"]))
+	major, rest, found := strings.Cut(strings.TrimPrefix(distro, "alpine-"), ".")
+	minor, _, _ := strings.Cut(rest, ".")
+	if !found || !isDigits(major) || !isDigits(minor) {
+		return ""
+	}
+	return "v" + major + "." + minor
+}
+
+func isDigits(value string) bool {
+	return value != "" && strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
 func firstNamespaceSegment(namespace string) string {
